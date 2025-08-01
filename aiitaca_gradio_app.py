@@ -1,311 +1,443 @@
-import gradio as gr
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-from core_functions_3 import *
-from cube_functions import *
 import tempfile
 import plotly.graph_objects as go
-import plotly.express as px
-import tensorflow as tf
-import gdown
-import shutil
-import time
+from scipy.interpolate import interp1d
 from astropy.io import fits
+import joblib
+import pandas as pd
 import warnings
-from paths import GDRIVE_FOLDER_URL, TEMP_MODEL_DIR
-# Añade esto al inicio del archivo para manejar la caché de modelos
-import os
-from pathlib import Path
+from io import StringIO
+import matplotlib.pyplot as plt
+import gradio as gr
+from glob import glob
+import shutil
 
-# Configura rutas para Hugging Face
-CACHE_DIR = Path("model_cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
+# =============================================
+# CONFIGURACIÓN DE PATHS LOCALES
+# =============================================
+LOCAL_MODEL_DIR = "RF_Models"
+LOCAL_FILTER_DIR = "RF_Filters"
 
-# Modifica la función de descarga para usar la caché
-def download_models_from_drive(folder_url, output_dir):
-    output_dir = CACHE_DIR / output_dir
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Resto de la función igual que antes...
-
-warnings.filterwarnings('ignore')
-
-# Configuración inicial
-if not os.path.exists(TEMP_MODEL_DIR):
-    os.makedirs(TEMP_MODEL_DIR)
-
-# Función para descargar modelos
-def download_models_from_drive(folder_url, output_dir):
-    model_files = [f for f in os.listdir(output_dir) if f.endswith('.keras')]
-    data_files = [f for f in os.listdir(output_dir) if f.endswith('.npz')]
-
-    if model_files and data_files:
-        return model_files, data_files, True
-
+# =============================================
+# HELPER FUNCTIONS (Mismos que en la versión Streamlit)
+# =============================================
+def list_local_files(directory):
+    """Recursively list all local files with detailed information"""
+    file_list = []
     try:
-        gdown.download_folder(
-            folder_url, 
-            output=output_dir, 
-            quiet=True,
-            use_cookies=False
-        )
-        
-        model_files = [f for f in os.listdir(output_dir) if f.endswith('.keras')]
-        data_files = [f for f in os.listdir(output_dir) if f.endswith('.npz')]
-        
-        return model_files, data_files, True
+        for root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            
+            for file in files:
+                if not file.startswith('.'):
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, directory)
+                    try:
+                        size = os.path.getsize(full_path)
+                        size_str = f"{size/1024:.1f} KB" if size > 1024 else f"{size} B"
+                        file_list.append({
+                            'path': rel_path,
+                            'size': size_str,
+                            'full_path': full_path,
+                            'is_file': True,
+                            'parent_dir': os.path.basename(root)
+                        })
+                    except Exception as e:
+                        file_list.append({
+                            'path': rel_path,
+                            'size': 'Error',
+                            'full_path': full_path,
+                            'is_file': True,
+                            'parent_dir': os.path.basename(root)
+                        })
     except Exception as e:
-        print(f"Error downloading models: {str(e)}")
-        return [], [], False
+        print(f"Error listing files in {directory}: {str(e)}")
+    return file_list
 
-# Descargar modelos al iniciar
-model_files, data_files, models_downloaded = download_models_from_drive(GDRIVE_FOLDER_URL, TEMP_MODEL_DIR)
-
-# Funciones de análisis
-def analyze_spectrum_wrapper(file_path, selected_model, freq_unit, intensity_unit, 
-                           sigma_emission, window_size, sigma_threshold, 
-                           fwhm_ghz, tolerance_ghz, min_peak_height_ratio,
-                           top_n_lines, top_n_similar):
+def robust_read_file(file_path):
+    """Read spectrum or filter files with robust format handling"""
     try:
-        # Configuración
-        config = {
-            'trained_models_dir': TEMP_MODEL_DIR,
-            'peak_matching': {
-                'sigma_emission': sigma_emission,
-                'window_size': window_size,
-                'sigma_threshold': sigma_threshold,
-                'fwhm_ghz': fwhm_ghz,
-                'tolerance_ghz': tolerance_ghz,
-                'min_peak_height_ratio': min_peak_height_ratio,
-                'top_n_lines': top_n_lines,
-                'debug': True,
-                'top_n_similar': top_n_similar
-            },
-            'units': {
-                'frequency': freq_unit,
-                'intensity': intensity_unit
-            }
-        }
+        if file_path.endswith('.fits'):
+            with fits.open(file_path) as hdul:
+                return hdul[1].data['freq'], hdul[1].data['intensity']
         
-        # Cargar modelo
-        mol_name = selected_model.replace('_model.keras', '')
-        model_path = os.path.join(TEMP_MODEL_DIR, selected_model)
-        model = tf.keras.models.load_model(model_path)
+        with open(file_path, 'rb') as f:
+            content = f.read()
         
-        # Cargar datos de entrenamiento
-        data_file = os.path.join(TEMP_MODEL_DIR, f'{mol_name}_train_data.npz')
-        with np.load(data_file) as data:
-            train_freq = data['train_freq']
-            train_data = data['train_data']
-            train_logn = data['train_logn']
-            train_tex = data['train_tex']
-            headers = data['headers']
-            filenames = data['filenames']
+        for encoding in ['utf-8', 'latin-1', 'ascii']:
+            try:
+                decoded = content.decode(encoding)
+                lines = decoded.splitlines()
+                
+                data_lines = []
+                for line in lines:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith(('!', '//', '#')):
+                        cleaned = stripped.replace(',', '.')
+                        data_lines.append(cleaned)
+                
+                if not data_lines:
+                    continue
+                
+                data = np.genfromtxt(data_lines)
+                if data.ndim == 2 and data.shape[1] >= 2:
+                    return data[:, 0], data[:, 1]
+                
+            except (UnicodeDecodeError, ValueError):
+                continue
         
-        # Analizar espectro
-        results = analyze_spectrum(
-            file_path, model, train_data, train_freq,
-            filenames, headers, train_logn, train_tex,
-            config, mol_name
+        raise ValueError("Could not read the file with any standard encoding")
+    
+    except Exception as e:
+        print(f"Error reading file {os.path.basename(file_path)}: {str(e)}")
+        return None, None
+
+def apply_spectral_filter(spectrum_freq, spectrum_intensity, filter_path):
+    """Apply spectral filter with robust handling"""
+    try:
+        filter_freq, filter_intensity = robust_read_file(filter_path)
+        if filter_freq is None:
+            return None
+        
+        if np.mean(filter_freq) > 1e6:
+            filter_freq = filter_freq / 1e9
+        
+        max_intensity = np.max(filter_intensity)
+        if max_intensity > 0:
+            filter_intensity = filter_intensity / max_intensity
+        
+        mask = filter_intensity > 0.01
+        
+        valid_points = (~np.isnan(spectrum_intensity)) & (~np.isinf(spectrum_intensity))
+        if np.sum(valid_points) < 2:
+            raise ValueError("Spectrum doesn't have enough valid points")
+        
+        interp_func = interp1d(
+            spectrum_freq[valid_points],
+            spectrum_intensity[valid_points],
+            kind='linear',
+            bounds_error=False,
+            fill_value=0.0
         )
         
-        # Ajustar unidades
-        freq_conversion = {
-            "GHz": 1e9,
-            "MHz": 1e6,
-            "kHz": 1e3,
-            "Hz": 1.0
+        filtered_data = interp_func(filter_freq) * filter_intensity
+        filtered_data = np.clip(filtered_data, 0, None)
+        
+        full_filtered = np.zeros_like(filter_freq)
+        full_filtered[mask] = filtered_data[mask]
+        
+        return {
+            'freq': filter_freq,
+            'intensity': full_filtered,
+            'filter_profile': filter_intensity,
+            'mask': mask,
+            'filter_name': os.path.splitext(os.path.basename(filter_path))[0],
+            'parent_dir': os.path.basename(os.path.dirname(filter_path))
+        }
+    
+    except Exception as e:
+        print(f"Error applying filter {os.path.basename(filter_path)}: {str(e)}")
+        return None
+
+def find_available_models(model_dir):
+    """Find all available model directories that contain the required files"""
+    required_files = {
+        'rf_tex': 'random_forest_tex.pkl',
+        'rf_logn': 'random_forest_logn.pkl',
+        'x_scaler': 'x_scaler.pkl',
+        'tex_scaler': 'tex_scaler.pkl',
+        'logn_scaler': 'logn_scaler.pkl'
+    }
+    
+    available_models = []
+    
+    try:
+        for root, dirs, files in os.walk(model_dir):
+            has_all_files = True
+            for req_file in required_files.values():
+                if req_file not in files:
+                    has_all_files = False
+                    break
+            
+            if has_all_files:
+                model_name = os.path.basename(root)
+                available_models.append({
+                    'name': model_name,
+                    'path': root
+                })
+    except Exception as e:
+        print(f"Error searching for models: {str(e)}")
+    
+    return available_models
+
+def load_prediction_models(model_dir):
+    """Load models without any output"""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            rf_tex = joblib.load(os.path.join(model_dir, 'random_forest_tex.pkl'))
+            rf_logn = joblib.load(os.path.join(model_dir, 'random_forest_logn.pkl'))
+            x_scaler = joblib.load(os.path.join(model_dir, 'x_scaler.pkl'))
+            tex_scaler = joblib.load(os.path.join(model_dir, 'tex_scaler.pkl'))
+            logn_scaler = joblib.load(os.path.join(model_dir, 'logn_scaler.pkl'))
+            return rf_tex, rf_logn, x_scaler, tex_scaler, logn_scaler
+        except:
+            return None, None, None, None, None
+
+def process_spectrum_for_prediction(file_path):
+    """Completely silent processing"""
+    try:
+        with open(file_path, 'r') as f:
+            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith(('!', '//', '#'))]
+        
+        data = pd.read_csv(StringIO('\n'.join(lines)), 
+                     sep='\s+', header=None, names=['freq', 'intensity'],
+                     dtype=np.float32).dropna()
+        
+        if len(data) < 1000:
+            return None
+            
+        freq = data['freq'].values
+        intensity = data['intensity'].values
+        
+        normalized_freq = (freq - freq.min()) / (freq.max() - freq.min())
+        interp_func = interp1d(normalized_freq, intensity, kind='linear', 
+                              bounds_error=False, fill_value="extrapolate")
+        interpolated = interp_func(np.linspace(0, 1, 64610))
+        
+        if np.any(np.isnan(interpolated)):
+            interpolated = np.nan_to_num(interpolated)
+        
+        if np.max(interpolated) != np.min(interpolated):
+            return (interpolated - np.min(interpolated)) / (np.max(interpolated) - np.min(interpolated))
+        return np.zeros_like(interpolated)
+    except:
+        return None
+
+def run_prediction(filtered_file_path, model_dir):
+    """Completely clean prediction function"""
+    models = load_prediction_models(model_dir)
+    if None in models:
+        return None, None
+        
+    scaled_spectrum = process_spectrum_for_prediction(filtered_file_path)
+    if scaled_spectrum is None:
+        return None, None
+        
+    rf_tex, rf_logn, x_scaler, tex_scaler, logn_scaler = models
+    scaled_spectrum = x_scaler.transform([scaled_spectrum])
+    
+    tex_pred = tex_scaler.inverse_transform(rf_tex.predict(scaled_spectrum).reshape(-1, 1))[0,0]
+    logn_pred = logn_scaler.inverse_transform(rf_logn.predict(scaled_spectrum).reshape(-1, 1))[0,0]
+    
+    return tex_pred, logn_pred
+
+def plot_prediction_results(tex_pred, logn_pred):
+    """Plot the prediction results cleanly"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    ax1.scatter(18.1857, logn_pred, c='red', s=200, edgecolors='black')
+    ax1.annotate(f"Pred: {logn_pred:.2f}", 
+                (18.1857, logn_pred),
+                textcoords="offset points",
+                xytext=(15,15), ha='center', fontsize=12, color='red')
+    ax1.set_xlabel('LogN de referencia')
+    ax1.set_ylabel('LogN predicho')
+    ax1.set_title('Predicción de LogN')
+    
+    ax2.scatter(203.492, tex_pred, c='red', s=200, edgecolors='black')
+    ax2.annotate(f"Pred: {tex_pred:.1f}", 
+                (203.492, tex_pred),
+                textcoords="offset points",
+                xytext=(15,15), ha='center', fontsize=12, color='red')
+    ax2.set_xlabel('Tex de referencia (K)')
+    ax2.set_ylabel('Tex predicho (K)')
+    ax2.set_title('Predicción de Tex')
+    
+    plt.tight_layout()
+    return fig
+
+# =============================================
+# GRADIO INTERFACE
+# =============================================
+def process_spectrum(input_file, selected_model):
+    # Create temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(input_file.name)[1]) as tmp_file:
+        tmp_file.write(input_file.read())
+        tmp_path = tmp_file.name
+    
+    try:
+        input_freq, input_spec = robust_read_file(tmp_path)
+        if input_freq is None:
+            return None, None, None, "Error: Could not read the spectrum file"
+        
+        original_spectrum = {
+            'freq': input_freq,
+            'intensity': input_spec
         }
         
-        intensity_conversion = {
-            "K": 1.0,
-            "Jy": 1.0
-        }
+        filter_files = []
+        for root, _, files in os.walk(LOCAL_FILTER_DIR):
+            for file in files:
+                if file.endswith('.txt'):
+                    filter_files.append(os.path.join(root, file))
         
-        if freq_unit != 'GHz':
-            results['input_freq'] = results['input_freq'] * 1e9 / freq_conversion[freq_unit]
-            results['best_match']['x_synth'] = results['best_match']['x_synth'] * 1e9 / freq_conversion[freq_unit]
+        if not filter_files:
+            return None, None, None, "Error: No filter files found in the filters directory"
         
-        if intensity_unit != 'K':
-            results['input_spec'] = results['input_spec'] * intensity_conversion[intensity_unit]
-            results['best_match']['y_synth'] = results['best_match']['y_synth'] * intensity_conversion[intensity_unit]
+        filtered_spectra = []
+        failed_filters = []
         
-        # Crear figura interactiva
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=results['input_freq'],
-            y=results['input_spec'],
+        for i, filter_file in enumerate(filter_files):
+            filter_name = os.path.splitext(os.path.basename(filter_file))[0]
+            
+            result = apply_spectral_filter(input_freq, input_spec, filter_file)
+            if result is not None:
+                output_filename = f"filtered_{result['filter_name']}.txt"
+                output_path = os.path.join(tempfile.gettempdir(), output_filename)
+                
+                header = f"!xValues(GHz)\tyValues(K)\n!Filter applied: {result['filter_name']}"
+                np.savetxt(
+                    output_path,
+                    np.column_stack((result['freq'], result['intensity'])),
+                    header=header,
+                    delimiter='\t',
+                    fmt=['%.10f', '%.6e'],
+                    comments=''
+                )
+                
+                filtered_spectra.append({
+                    'name': result['filter_name'],
+                    'filtered_data': result,
+                    'output_path': output_path,
+                    'parent_dir': result['parent_dir']
+                })
+            else:
+                failed_filters.append(os.path.basename(filter_file))
+        
+        if not filtered_spectra:
+            return None, None, None, f"Error: No filters were successfully applied. {len(failed_filters)} filters failed."
+        
+        # Create main plot
+        fig_main = go.Figure()
+        fig_main.add_trace(go.Scatter(
+            x=original_spectrum['freq'],
+            y=original_spectrum['intensity'],
             mode='lines',
-            name='Input Spectrum',
-            line=dict(color='white', width=2)))
-        
-        fig.add_trace(go.Scatter(
-            x=results['best_match']['x_synth'],
-            y=results['best_match']['y_synth'],
-            mode='lines',
-            name='Best Match',
-            line=dict(color='red', width=2)))
-        
-        fig.update_layout(
-            plot_bgcolor='#0D0F14',
-            paper_bgcolor='#0D0F14',
-            margin=dict(l=50, r=50, t=60, b=50),
-            xaxis_title=f'Frequency ({freq_unit})',
-            yaxis_title=f'Intensity ({intensity_unit})',
-            hovermode='x unified',
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ),
-            height=600,
-            font=dict(color='white'),
-            xaxis=dict(gridcolor='#3A3A3A'),
-            yaxis=dict(gridcolor='#3A3A3A')
+            name='Original Spectrum',
+            line=dict(color='blue', width=2))
         )
         
-        # Crear resumen de resultados
-        summary = f"""
-        <div style="background-color: #0D0F14; padding: 15px; border-radius: 5px; color: white;">
-            <h3 style="color: #1E88E5; margin-top: 0;">Detection of Physical Parameters</h3>
-            <p><strong>LogN:</strong> {results['best_match']['logn']:.2f} cm⁻²</p>
-            <p><strong>Tex:</strong> {results['best_match']['tex']:.2f} K</p>
-            <p><strong>File (Top CNN Train):</strong> {results['best_match']['filename']}</p>
-        </div>
-        """
+        for result in filtered_spectra:
+            fig_main.add_trace(go.Scatter(
+                x=result['filtered_data']['freq'],
+                y=result['filtered_data']['intensity'],
+                mode='lines',
+                name=f"Filtered: {result['name']}",
+                line=dict(width=1.5))
+            )
         
-        return summary, fig, results
+        fig_main.update_layout(
+            title="Spectrum Filtering Results",
+            xaxis_title="Frequency (GHz)",
+            yaxis_title="Intensity (K)",
+            hovermode="x unified",
+            height=600
+        )
+        
+        # Find CH3OCHO spectrum for prediction
+        ch3ocho_result = next((r for r in filtered_spectra if "CH3OCHO" in r['name'].upper()), None)
+        prediction_result = None
+        prediction_fig = None
+        
+        if ch3ocho_result and selected_model:
+            model_path = next((m['path'] for m in find_available_models(LOCAL_MODEL_DIR) if m['name'] == selected_model), None)
+            if model_path:
+                tex_pred, logn_pred = run_prediction(ch3ocho_result['output_path'], model_path)
+                if tex_pred and logn_pred:
+                    prediction_result = f"Tex: {tex_pred:.2f} K\nLogN: {logn_pred:.2f}"
+                    prediction_fig = plot_prediction_results(tex_pred, logn_pred)
+        
+        return fig_main, filtered_spectra, prediction_fig, prediction_result if prediction_result else "No CH3OCHO prediction available"
     
     except Exception as e:
-        return f"Error during analysis: {e}", None, None
+        return None, None, None, f"Processing error: {str(e)}"
+    finally:
+        os.unlink(tmp_path)
 
-# Función para visualizar cubos FITS
-def visualize_cube(cube_file, channel, scale, show_rms):
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".fits") as tmp_cube:
-            tmp_cube.write(cube_file)
-            tmp_cube_path = tmp_cube.name
-        
-        cube_info = load_alma_cube(tmp_cube_path)
-        
-        if len(cube_info['data'].shape) == 3:
-            img_data = cube_info['data'][channel, :, :]
-        else:
-            img_data = cube_info['data']
-        
-        if scale == "Log":
-            img_data = np.log10(img_data - np.nanmin(img_data) + 1)
-        elif scale == "Sqrt":
-            img_data = np.sqrt(img_data - np.nanmin(img_data))
-        
-        fig = px.imshow(
-            img_data,
-            origin='lower',
-            color_continuous_scale='viridis',
-            labels={'color': 'Intensity (K)'},
-            title=f"Channel {channel}" + (f" ({cube_info['freq_axis'][channel]/1e9:.4f} GHz)" if cube_info['freq_axis'] is not None else "")
-        )
-        
-        fig.update_layout(
-            plot_bgcolor='#0D0F14',
-            paper_bgcolor='#0D0F14',
-            margin=dict(l=50, r=50, t=80, b=50),
-            xaxis_title="RA (pixels)",
-            yaxis_title="Dec (pixels)",
-            font=dict(color='white'),
-            xaxis=dict(gridcolor='#3A3A3A'),
-            yaxis=dict(gridcolor='#3A3A3A')
-        )
-        
-        os.unlink(tmp_cube_path)
-        return fig, cube_info
+def create_filter_details(filtered_spectra):
+    details = []
+    for result in filtered_spectra:
+        with gr.Box():
+            with gr.Row():
+                # Filter profile plot
+                fig_filter = go.Figure()
+                fig_filter.add_trace(go.Scatter(
+                    x=result['filtered_data']['freq'],
+                    y=result['filtered_data']['filter_profile'],
+                    mode='lines',
+                    name='Filter Profile',
+                    line=dict(color='green'))
+                fig_filter.update_layout(
+                    title=f"Filter Profile: {result['name']}",
+                    height=300
+                )
+                
+                # Comparison plot
+                fig_compare = go.Figure()
+                fig_compare.add_trace(go.Scatter(
+                    x=result['filtered_data']['freq'],
+                    y=result['filtered_data']['intensity'],
+                    mode='lines',
+                    name='Filtered',
+                    line=dict(color='red', width=1))
+                )
+                fig_compare.update_layout(
+                    title=f"Filtered Spectrum: {result['name']}",
+                    height=300
+                )
+                
+                details.append((fig_filter, fig_compare, result['name']))
     
-    except Exception as e:
-        return f"Error processing ALMA cube: {str(e)}", None
+    return details
 
-# Interfaz de Gradio
-with gr.Blocks(theme=gr.themes.Default(primary_hue="blue", secondary_hue="gray")) as demo:
-    gr.Markdown("# AI-ITACA | Spectrum Analyzer")
-    gr.Markdown("### Molecular Spectrum Analysis Tool")
+# Initialize available models
+available_models = [m['name'] for m in find_available_models(LOCAL_MODEL_DIR)] if os.path.exists(LOCAL_MODEL_DIR) else []
+
+# Create Gradio interface
+with gr.Blocks(title="AI-ITACA | Spectrum Analyzer", theme="default") as demo:
+    gr.Markdown("""
+    # AI-ITACA | Artificial Intelligence Integral Tool for AstroChemical Analysis
+    ## Molecular Spectrum Analyzer
+    """)
+    
+    with gr.Row():
+        with gr.Column():
+            input_file = gr.File(label="Upload Spectrum File", file_types=[".txt", ".dat", ".fits", ".spec"])
+            model_dropdown = gr.Dropdown(choices=available_models, label="Select Prediction Model", interactive=bool(available_models))
+            submit_btn = gr.Button("Analyze Spectrum", variant="primary")
+        
+        with gr.Column():
+            status_output = gr.Textbox(label="Status", interactive=False)
     
     with gr.Tabs():
-        with gr.TabItem("Molecular Analyzer"):
-            with gr.Row():
-                with gr.Column():
-                    file_input = gr.File(label="Input Spectrum File", file_types=[".txt", ".dat", ".fits", ".spec"])
-                    model_dropdown = gr.Dropdown(model_files, label="Select Molecule Model")
-                    
-                    with gr.Accordion("Units Configuration", open=False):
-                        freq_unit = gr.Dropdown(["GHz", "MHz", "kHz", "Hz"], value="GHz", label="Frequency Units")
-                        intensity_unit = gr.Dropdown(["K", "Jy"], value="K", label="Intensity Units")
-                    
-                    with gr.Accordion("Peak Matching Parameters", open=False):
-                        sigma_emission = gr.Slider(0.1, 5.0, value=1.5, step=0.1, label="Sigma Emission")
-                        window_size = gr.Slider(1, 20, value=3, step=1, label="Window Size")
-                        sigma_threshold = gr.Slider(0.1, 5.0, value=2.0, step=0.1, label="Sigma Threshold")
-                        fwhm_ghz = gr.Slider(0.01, 0.5, value=0.05, step=0.01, label="FWHM (GHz)")
-                        tolerance_ghz = gr.Slider(0.01, 1.0, value=0.1, step=0.01, label="Tolerance (GHz)")
-                        min_peak_height_ratio = gr.Slider(0.1, 1.0, value=0.3, step=0.05, label="Min Peak Height Ratio")
-                        top_n_lines = gr.Slider(5, 100, value=30, step=5, label="Top N Lines")
-                        top_n_similar = gr.Slider(50, 5000, value=50, step=50, label="Top N Similar")
-                    
-                    analyze_btn = gr.Button("Analyze Spectrum", variant="primary")
-                
-                with gr.Column():
-                    results_summary = gr.HTML()
-                    plot_output = gr.Plot()
+        with gr.TabItem("Interactive Spectrum"):
+            spectrum_plot = gr.Plot(label="Spectrum Visualization")
         
-            analyze_btn.click(
-                fn=analyze_spectrum_wrapper,
-                inputs=[file_input, model_dropdown, freq_unit, intensity_unit,
-                       sigma_emission, window_size, sigma_threshold,
-                       fwhm_ghz, tolerance_ghz, min_peak_height_ratio,
-                       top_n_lines, top_n_similar],
-                outputs=[results_summary, plot_output]
-            )
+        with gr.TabItem("Filter Details"):
+            filter_details = gr.Gallery(label="Filter Details", columns=2)
         
-        with gr.TabItem("Cube Visualizer"):
+        with gr.TabItem("CH3OCHO Prediction"):
             with gr.Row():
-                with gr.Column():
-                    cube_input = gr.File(label="Upload ALMA Cube (FITS format)", file_types=[".fits"])
-                    channel_slider = gr.Slider(0, 100, value=50, step=1, label="Channel")
-                    scale_radio = gr.Radio(["Linear", "Log", "Sqrt"], value="Linear", label="Image Scale")
-                    show_rms_check = gr.Checkbox(value=True, label="Show RMS noise level")
-                    visualize_btn = gr.Button("Visualize Cube", variant="primary")
-                
-                with gr.Column():
-                    cube_plot = gr.Plot()
-            
-            def update_channel_slider(cube_file):
-                try:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".fits") as tmp_cube:
-                        tmp_cube.write(cube_file)
-                        tmp_cube_path = tmp_cube.name
-                    
-                    cube_info = load_alma_cube(tmp_cube_path)
-                    os.unlink(tmp_cube_path)
-                    
-                    if len(cube_info['data'].shape) == 3:
-                        max_chan = cube_info['n_chan'] - 1
-                        return gr.Slider(maximum=max_chan, value=max_chan//2)
-                    return gr.Slider(maximum=100, value=50)
-                except:
-                    return gr.Slider(maximum=100, value=50)
-            
-            cube_input.change(
-                fn=update_channel_slider,
-                inputs=cube_input,
-                outputs=channel_slider
-            )
-            
-            visualize_btn.click(
-                fn=visualize_cube,
-                inputs=[cube_input, channel_slider, scale_radio, show_rms_check],
-                outputs=[cube_plot]
-            )
+                prediction_plot = gr.Plot(label="Prediction Results")
+                prediction_output = gr.Textbox(label="Prediction Values", interactive=False)
+    
+    submit_btn.click(
+        fn=process_spectrum,
+        inputs=[input_file, model_dropdown],
+        outputs=[spectrum_plot, filter_details, prediction_plot, status_output]
+    )
 
-# Iniciar la aplicación
+# For Hugging Face Spaces
 demo.launch()
