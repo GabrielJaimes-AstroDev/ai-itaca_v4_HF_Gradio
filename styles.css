@@ -1,0 +1,178 @@
+/* General styles */
+.stApp, .main .block-container, body {
+    background-color: #15181c !important;
+    font-family: 'Arial', sans-serif;
+}
+
+/* Text and controls */
+body, .stMarkdown, .stText, 
+.stSlider [data-testid="stMarkdownContainer"],
+.stSelectbox, .stNumberInput, .stTextInput,
+.stTabs [data-baseweb="tab"] {
+    color: #FFFFFF !important;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background-color: #FFFFFF !important;
+    border-right: 1px solid #e0e0e0;
+}
+[data-testid="stSidebar"] * {
+    color: #000000 !important;
+}
+
+/* Buttons */
+.stButton>button {
+    border: 2px solid #1E88E5 !important;
+    color: white !important;
+    background-color: #1E88E5 !important;
+    border-radius: 5px !important;
+    padding: 0.5rem 1rem !important;
+    transition: all 0.3s ease;
+}
+.stButton>button:hover {
+    background-color: #0D47A1 !important;
+    border-color: #0D47A1 !important;
+}
+
+/* Titles */
+h1, h2, h3, h4, h5, h6 {
+    color: #1E88E5 !important;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+}
+
+/* Panels */
+.description-panel {
+    background-color: white !important;
+    color: black !important;
+    padding: 20px;
+    border-radius: 10px;
+    margin: 15px 0;
+    border-left: 5px solid #1E88E5 !important;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+/* Graphs */
+.plotly-graph-div {
+    background-color: #0D0F14 !important;
+    border-radius: 8px;
+}
+
+/* File list */
+.file-list {
+    background-color: #2d2d2d !important;
+    padding: 10px;
+    border-radius: 5px;
+    margin: 5px 0;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+    overflow-x: auto;
+}
+
+/* Status messages */
+.success-box {
+    background-color: #4CAF50 !important;
+    color: white !important;
+    padding: 15px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+}
+.warning-box {
+    background-color: #FF9800 !important;
+    color: white !important;
+    padding: 15px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+}
+.error-box {
+    background-color: #F44336 !important;
+    color: white !important;
+    padding: 15px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+}
+
+/* Tabs */
+.stTabs [aria-selected="true"] {
+    background-color: #1E88E5 !important;
+    color: white !important;
+}
+
+/* Progress bar */
+.stProgress > div > div > div {
+    background-color: #1E88E5 !important;
+}
+
+/* Tree view for directories */
+.tree-view {
+    font-family: 'Courier New', monospace;
+    font-size: 0.85em;
+    margin-left: 15px;
+}
+.tree-view .directory {
+    color: #1E88E5;
+    font-weight: bold;
+}
+.tree-view .file {
+    color: #4CAF50;
+}
+.tree-view .size {
+    color: #FF9800;
+    font-size: 0.8em;
+    margin-left: 10px;
+}
+
+/* File explorer */
+.file-explorer {
+    background-color: #2d2d2d;
+    padding: 10px;
+    border-radius: 5px;
+    margin-bottom: 15px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+.file-explorer-header {
+    font-weight: bold;
+    margin-bottom: 5px;
+    color: #1E88E5;
+}
+.file-explorer-item {
+    padding: 3px 0;
+    border-bottom: 1px solid #3d3d3d;
+}
+.file-explorer-item:hover {
+    background-color: #3d3d3d;
+}
+
+/* New styles for filter visualization */
+.filter-container {
+    background-color: #1e1e1e;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 15px;
+}
+.filter-header {
+    color: #1E88E5;
+    font-size: 1.2em;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #3d3d3d;
+    padding-bottom: 5px;
+}
+.filter-subheader {
+    color: #FF9800;
+    font-size: 1em;
+    margin: 5px 0;
+}
+
+/* Resource panel styles */
+.resource-panel {
+    background-color: #f5f5f5;
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 15px;
+}
+.resource-header {
+    color: #1E88E5;
+    font-weight: bold;
+    cursor: pointer;
+}

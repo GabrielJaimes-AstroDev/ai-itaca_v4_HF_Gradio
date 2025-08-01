@@ -1,0 +1,25 @@
+# Core packages
+numpy==1.26.4              # Versión compatible con Python 3.12
+scipy==1.13.0              # Versión más reciente compatible
+scikit-learn==1.5.0        # Versión estable para numpy 1.26.x
+joblib==1.4.2              # Compatible con scikit-learn 1.5.0
+pandas==2.2.2              # Versión estable para numpy 1.26.x
+
+# Visualization
+matplotlib==3.8.4          # Versión más reciente estable
+plotly==5.18.0             # Compatible con las versiones anteriores
+
+# Astronomy and data handling
+astropy==6.1.0             # Versión compatible con numpy 1.26.x
+
+# Web interface
+streamlit==1.36.0          # Versión más reciente estable
+
+# Utilities
+python-dateutil==2.9.0     # Requerido por pandas
+pytz==2024.1               # Versión más reciente
+typing-extensions==4.11.0  # Compatible con Python 3.11+
+
+# Dependencies for Streamlit Cloud
+setuptools==69.2.0         # Necesario para la instalación
+wheel==0.43.0              # Mejora las instalaciones
