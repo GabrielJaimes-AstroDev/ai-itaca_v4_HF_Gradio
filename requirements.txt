@@ -23,3 +23,5 @@ typing-extensions==4.11.0  # Compatible con Python 3.11+
 # Dependencies for Streamlit Cloud
 setuptools==69.2.0         # Necesario para la instalación
 wheel==0.43.0              # Mejora las instalaciones
+
+gradio
