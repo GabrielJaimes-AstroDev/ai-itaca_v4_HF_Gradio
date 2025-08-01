@@ -1,29 +1,21 @@
-# AI-ITACA - Spectrum Analyzer
+# AI-ITACA Spectrum Analyzer
 
-🔭 Herramienta de análisis espectral molecular basada en IA
+This is a Gradio implementation of the AI-ITACA spectrum analysis tool for molecular spectra.
 
-## Características principales
+## How to use
 
-- Análisis automático de espectros moleculares
-- Visualización interactiva de cubos FITS
-- Detección de parámetros físicos (Tex, LogN)
+1. Upload your spectrum file (TXT, DAT, FITS, or SPEC format)
+2. Select a prediction model (if available)
+3. Click "Analyze Spectrum"
+4. View results in the interactive tabs
 
-## Uso
+## Directory Structure
 
-1. Sube tu archivo de espectro (.txt, .fits, etc.)
-2. Selecciona el modelo molecular
-3. Ajusta los parámetros de análisis
-4. Visualiza los resultados
+- `RF_Models/`: Contains the machine learning models
+- `RF_Filters/`: Contains spectral filters
 
-## Ejemplo
+## Supported Formats
 
-```python
-# Código de ejemplo si aplica
-```
-
-## Modelos disponibles
-
-- CO
-- HCN
-- HCO+
-- CS
+- Text files (.txt, .dat)
+- FITS files (.fits)
+- Spectrum files (.spec)
